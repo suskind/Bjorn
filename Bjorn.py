@@ -39,6 +39,9 @@ class Bjorn:
         self.orchestrator = None
         self.wifi_setup = WifiSetupManager(self.shared_data, logger)
         self.shared_data.wifi_setup_manager = self.wifi_setup
+        self.wifi_reconnect_grace = 60
+        self.wifi_disconnected_since = None
+        self.has_connected_wifi = False
 
     def run(self):
         """Main loop for Bjorn. Waits for Wi-Fi connection and starts Orchestrator."""
@@ -57,15 +60,41 @@ class Bjorn:
         if self.is_wifi_connected():
             self.wifi_connected = True
             self.shared_data.wifi_connected = True
+            self.has_connected_wifi = True
+            self.wifi_disconnected_since = None
             if (not self.shared_data.manual_mode and
                     (self.orchestrator_thread is None or not self.orchestrator_thread.is_alive())):
                 self.start_orchestrator()
         else:
             self.wifi_connected = False
             self.shared_data.wifi_connected = False
-            logger.info("No Wi-Fi connection; enabling the setup access point.")
-            if self.wifi_setup.start_access_point():
+
+            if self.wifi_setup.access_point_active:
                 self.ensure_web_server()
+                return
+
+            if not self.has_connected_wifi:
+                logger.info("No saved Wi-Fi connection; enabling the setup access point.")
+                if self.wifi_setup.start_access_point():
+                    self.ensure_web_server()
+                return
+
+            if self.wifi_disconnected_since is None:
+                self.wifi_disconnected_since = time.monotonic()
+                logger.warning(
+                    f"Wi-Fi connection lost; waiting {self.wifi_reconnect_grace} seconds "
+                    "before enabling setup mode."
+                )
+                return
+
+            disconnected_for = time.monotonic() - self.wifi_disconnected_since
+            if disconnected_for >= self.wifi_reconnect_grace:
+                logger.warning(
+                    f"Wi-Fi has been unavailable for {self.wifi_reconnect_grace} seconds; "
+                    "enabling setup mode."
+                )
+                if self.wifi_setup.start_access_point():
+                    self.ensure_web_server()
 
     @staticmethod
     def ensure_web_server():

@@ -22,6 +22,7 @@ import logging
 import random
 import sys
 import netifaces
+import qrcode
 from PIL import Image, ImageDraw
 from init_shared import shared_data  
 from comment import Commentaireia
@@ -81,6 +82,8 @@ class Display:
         self.ip_screen_duration = 6  # Seconds the IP screen stays visible.
         self.next_ip_screen_time = time.time() + 15
         self.ip_screen_until = 0
+        self.wifi_setup_qr_url = None
+        self.wifi_setup_qr_image = None
 
     def get_frise_position(self):
         """Get the frise position based on the display type."""
@@ -301,13 +304,18 @@ class Display:
             logger.debug(f"Error getting device IP: {e}")
             return ""
 
-    def render_detail_screen(self, title, details, title_font=None):
+    def render_detail_screen(self, title, details, title_font=None, qr_image=None):
         """Render a full-screen title and list of (label, font) lines."""
         image = Image.new('1', (self.shared_data.width, self.shared_data.height), 255)
         draw = ImageDraw.Draw(image)
         margin = int(5 * self.scale_factor_x)
         y = int(8 * self.scale_factor_y)
         title_font = title_font or self.shared_data.font_arialbold
+        content_bottom = self.shared_data.height - margin
+        qr_top = None
+        if qr_image is not None:
+            qr_top = self.shared_data.height - margin - qr_image.height
+            content_bottom = qr_top - int(5 * self.scale_factor_y)
 
         draw.rectangle(
             (1, 1, self.shared_data.width - 1, self.shared_data.height - 1),
@@ -324,13 +332,18 @@ class Display:
         for text, text_font in details:
             for line in self.wrap_setup_text(
                     text, text_font, self.shared_data.width - 2 * margin):
-                draw.text((margin, y), line, font=text_font, fill=0)
                 bounds = text_font.getbbox(line)
-                y += max(10, bounds[3] - bounds[1] + 3)
-                if y >= self.shared_data.height - margin:
+                line_height = max(10, bounds[3] - bounds[1])
+                if y + line_height > content_bottom:
                     break
-            if y >= self.shared_data.height - margin:
+                draw.text((margin, y), line, font=text_font, fill=0)
+                y += line_height + 3
+            if y >= content_bottom:
                 break
+
+        if qr_image is not None:
+            qr_x = (self.shared_data.width - qr_image.width) // 2
+            image.paste(qr_image, (qr_x, qr_top))
 
         display_image = image.transpose(Image.ROTATE_180) if self.screen_reversed else image
         self.epd_helper.display_partial(display_image)
@@ -344,17 +357,33 @@ class Display:
         """Show the temporary access point credentials and setup URL."""
         font = self.shared_data.font_arial9
         bold_font = self.shared_data.font_arialbold
+        portal_url = f"http://{self.shared_data.wifi_setup_ip}:8000/setup"
         details = [
             ("Join Wi-Fi:", bold_font),
             (self.shared_data.wifi_setup_ssid, font),
             ("Password:", bold_font),
             (self.shared_data.wifi_setup_password, font),
-            ("Open in browser:", bold_font),
-            (f"http://{self.shared_data.wifi_setup_ip}:8000/setup", font),
-            (self.shared_data.wifi_setup_status, font),
+            ("Scan QR or open:", bold_font),
+            (portal_url, font),
         ]
+        if portal_url != self.wifi_setup_qr_url:
+            qr = qrcode.QRCode(
+                error_correction=qrcode.constants.ERROR_CORRECT_M,
+                box_size=3,
+                border=4,
+            )
+            qr.add_data(portal_url)
+            qr.make(fit=True)
+            self.wifi_setup_qr_image = qr.make_image(
+                fill_color="black", back_color="white"
+            ).get_image().convert("1")
+            self.wifi_setup_qr_url = portal_url
+
         self.render_detail_screen(
-            "BJORN", details, title_font=self.shared_data.font_viking
+            "BJORN",
+            details,
+            title_font=self.shared_data.font_viking,
+            qr_image=self.wifi_setup_qr_image,
         )
 
     @staticmethod
